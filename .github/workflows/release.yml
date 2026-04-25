@@ -1,0 +1,56 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: bun-linux-x64
+            ext: ""
+          - os: macos-latest
+            target: bun-darwin-arm64
+            ext: ""
+          - os: macos-13
+            target: bun-darwin-x64
+            ext: ""
+          - os: windows-latest
+            target: bun-windows-x64
+            ext: ".exe"
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Build binary
+        run: bun build --compile ./src/index.ts --target=${{ matrix.target }} --outfile=coding-plan-pro-max-${{ matrix.target }}${{ matrix.ext }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coding-plan-pro-max-${{ matrix.target }}
+          path: coding-plan-pro-max-${{ matrix.target }}${{ matrix.ext }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true
