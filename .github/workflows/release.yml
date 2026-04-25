@@ -32,6 +32,8 @@ jobs:
 
       - uses: oven-sh/setup-bun@v2
 
+      - run: bun install
+
       - name: Build binary
         run: bun build --compile ./src/index.ts --target=${{ matrix.target }} --outfile=coding-plan-pro-max-${{ matrix.target }}${{ matrix.ext }}
 
