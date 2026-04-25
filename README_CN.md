@@ -1,6 +1,6 @@
 # coding-plan-pro-max
 
-> ⚠️ **声明**：这是学习 [opencode](https://github.com/nicepkg/opencode) 过程中的个人练手项目，不用于生产环境。
+> ⚠️ **声明**：这是学习 [opencode](https://github.com/anomalyco/opencode) 过程中的个人练手项目，不用于生产环境。
 
 OpenAI 兼容的反向代理，支持**多 Key 轮换**和交互式 CLI。
 

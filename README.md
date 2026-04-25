@@ -1,6 +1,6 @@
 # coding-plan-pro-max
 
-> ⚠️ **Disclaimer**: This is a personal learning project built while studying [opencode](https://github.com/nicepkg/opencode). Not intended for production use.
+> ⚠️ **Disclaimer**: This is a personal learning project built while studying [opencode](https://github.com/anomalyco/opencode). Not intended for production use.
 
 An OpenAI-compatible reverse proxy with **multi-key rotation** and an interactive CLI.
 
