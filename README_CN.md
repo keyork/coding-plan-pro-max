@@ -4,6 +4,13 @@
 
 OpenAI 兼容的反向代理，支持**多 Key 轮换**和交互式 CLI。
 
+## 演示
+
+<p align="center">
+  <img src="assets/demo-set.png" width="49%" alt="交互式登录配置">
+  <img src="assets/demo-use.png" width="49%" alt="代理使用效果">
+</p>
+
 `coding-plan-pro-max auth login` → 输入上游 URL 和 API Key → `coding-plan-pro-max start` → 完成。代理将标准的 `/v1/chat/completions` 请求转发到任意 OpenAI 兼容的上游，配额耗尽时自动切换 Key。
 
 ## 快速开始

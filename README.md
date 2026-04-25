@@ -4,6 +4,13 @@
 
 An OpenAI-compatible reverse proxy with **multi-key rotation** and an interactive CLI.
 
+## Demo
+
+<p align="center">
+  <img src="assets/demo-set.png" width="49%" alt="auth login setup">
+  <img src="assets/demo-use.png" width="49%" alt="proxy usage">
+</p>
+
 `coding-plan-pro-max auth login` → enter your upstream URL and API keys → `coding-plan-pro-max start` → done. The proxy forwards standard `/v1/chat/completions` requests to any OpenAI-compatible upstream, with automatic key rotation on quota exhaustion.
 
 ## Quick Start
