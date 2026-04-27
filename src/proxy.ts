@@ -104,11 +104,56 @@ interface ChatCompletionRequest {
 export async function handleChatCompletions(c: Context): Promise<Response> {
   const sem = semaphore();
   await sem.acquire();
-  try {
-    return await handleChatCompletionsInner(c);
-  } finally {
-    sem.release();
+  const response = await handleChatCompletionsInner(c);
+
+  if (response.body) {
+    return new Response(
+      wrapBodyWithRelease(response.body, () => sem.release()),
+      {
+        status: response.status,
+        headers: response.headers,
+      },
+    );
   }
+
+  sem.release();
+  return response;
+}
+
+function wrapBodyWithRelease(
+  body: ReadableStream<Uint8Array>,
+  onDone: () => void,
+): ReadableStream<Uint8Array> {
+  const reader = body.getReader();
+  let released = false;
+
+  const release = () => {
+    if (!released) {
+      released = true;
+      onDone();
+    }
+  };
+
+  return new ReadableStream({
+    async pull(controller) {
+      try {
+        const { done, value } = await reader.read();
+        if (done) {
+          release();
+          controller.close();
+          return;
+        }
+        controller.enqueue(value);
+      } catch (err) {
+        release();
+        controller.error(err);
+      }
+    },
+    cancel() {
+      release();
+      reader.cancel().catch(() => {});
+    },
+  });
 }
 
 async function handleChatCompletionsInner(c: Context): Promise<Response> {
@@ -187,7 +232,7 @@ async function handleChatCompletionsInner(c: Context): Promise<Response> {
       }
 
       // Non-streaming path
-      const result = await forwardNonStreaming(upstreamURL, body, headers);
+      const result = await forwardNonStreaming(upstreamURL, body, headers, abortSignal);
       if (isQuotaError(result.status, await result.clone().text())) {
         markExhausted(entry.index);
         continue;
@@ -218,11 +263,13 @@ async function forwardNonStreaming(
   upstreamURL: string,
   body: unknown,
   headers: Record<string, string>,
+  abortSignal: AbortSignal,
 ): Promise<Response> {
   const upstreamRes = await fetch(upstreamURL, {
     method: "POST",
     headers,
     body: JSON.stringify(body),
+    signal: abortSignal,
   });
 
   const responseBody = await upstreamRes.text();
