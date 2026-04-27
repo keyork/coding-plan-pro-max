@@ -41,8 +41,10 @@ export function startServer(): void {
 
   function shutdown() {
     console.log("\n[proxy] shutting down...");
+    const raw = server as unknown as { closeAllConnections?: () => void };
+    raw.closeAllConnections?.();
     server.close(() => process.exit(0));
-    setTimeout(() => process.exit(1), 5000);
+    setTimeout(() => process.exit(0), 5000);
   }
 
   process.on("SIGINT", shutdown);

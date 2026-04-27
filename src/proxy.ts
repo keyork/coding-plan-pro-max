@@ -321,11 +321,13 @@ async function forwardStreaming(
     );
   }
 
+  abortSignal.addEventListener("abort", () => upstreamRes.body?.cancel(), { once: true });
+
   return new Response(upstreamRes.body, {
+    status: upstreamRes.status,
     headers: {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",
-      Connection: "keep-alive",
     },
   });
 }
