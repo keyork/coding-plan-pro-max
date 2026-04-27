@@ -4,11 +4,17 @@ import { logger } from "hono/logger";
 import { serve } from "@hono/node-server";
 import { loadConfig } from "./config.js";
 import { initPool, getPoolStatus } from "./key-pool.js";
+import { initSemaphore, semaphore } from "./semaphore.js";
 import { handleChatCompletions, handleModels } from "./proxy.js";
 
 export function startServer(): void {
   const config = loadConfig();
   initPool();
+  initSemaphore(config.maxParallel);
+
+  console.log(
+    `[proxy] concurrency: max ${config.maxParallel} parallel requests`,
+  );
 
   const app = new Hono();
 
@@ -22,6 +28,7 @@ export function startServer(): void {
     c.json({
       status: "ok",
       upstream: config.upstreamBaseURL,
+      concurrency: semaphore().status,
       pool: getPoolStatus(),
     }),
   );

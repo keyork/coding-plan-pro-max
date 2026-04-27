@@ -1,6 +1,7 @@
 import type { Context } from "hono";
 import { loadConfig, normalizeModelName } from "./config.js";
 import { pick, markExhausted } from "./key-pool.js";
+import { semaphore } from "./semaphore.js";
 
 /** Maximum number of key-rotation retries per request. */
 const MAX_RETRIES = 5;
@@ -101,6 +102,16 @@ interface ChatCompletionRequest {
  * Supports both streaming (SSE) and non-streaming responses.
  */
 export async function handleChatCompletions(c: Context): Promise<Response> {
+  const sem = semaphore();
+  await sem.acquire();
+  try {
+    return await handleChatCompletionsInner(c);
+  } finally {
+    sem.release();
+  }
+}
+
+async function handleChatCompletionsInner(c: Context): Promise<Response> {
   const config = loadConfig();
 
   // --- Parse request body ---

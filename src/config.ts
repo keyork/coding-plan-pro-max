@@ -7,6 +7,7 @@ export interface Config {
   upstreamBaseURL: string;
   port: number;
   cooldownMs: number;
+  maxParallel: number;
 }
 
 let cached: Config | undefined;
@@ -126,11 +127,19 @@ export function loadConfig(): Config {
     process.exit(1);
   }
 
+  // --- Max parallel ---
+  const maxParallel = parseInt(process.env.MAX_PARALLEL ?? "4", 10);
+  if (!Number.isFinite(maxParallel) || maxParallel < 1) {
+    console.error(`Invalid MAX_PARALLEL: "${process.env.MAX_PARALLEL}". Must be >= 1.`);
+    process.exit(1);
+  }
+
   cached = {
     apiKeys,
     upstreamBaseURL: upstreamBaseURL.replace(/\/+$/, ""),
     port,
     cooldownMs,
+    maxParallel,
   };
 
   return cached;

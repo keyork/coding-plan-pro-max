@@ -60,6 +60,7 @@ coding-plan-pro-max auth login
 | `UPSTREAM_BASE_URL` | 是* | 上游 API 基础 URL |
 | `PORT` | 否 | 服务端口（默认 `3000`，范围 1–65535） |
 | `COOLDOWN_MS` | 否 | 耗尽 Key 的冷却时间（默认 `18000000` = 5 小时） |
+| `MAX_PARALLEL` | 否 | 最大并发上游请求数（默认 `4`） |
 
 \* 除非已通过 `coding-plan-pro-max auth login` 设置。
 
@@ -86,6 +87,10 @@ coding-plan-pro-max auth login
 2. **配额耗尽自动切换** — HTTP 429 或 403 含配额关键词 → Key 进入冷却，立即尝试下一个。
 3. **冷却恢复** — 经过 `COOLDOWN_MS` 后 Key 重新可用。
 4. **全部耗尽返回 503** — 所有 Key 在冷却期 → 返回 `503` + `proxy_error`。
+
+## 并发控制
+
+请求通过有界池处理。`MAX_PARALLEL`（默认 `4`）控制同时进行的上游调用数。超出限制的请求排队等待，有空位时自动派发。
 
 ## API 端点
 

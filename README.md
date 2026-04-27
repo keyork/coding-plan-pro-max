@@ -60,6 +60,7 @@ coding-plan-pro-max auth login
 | `UPSTREAM_BASE_URL` | Yes* | Upstream API base URL |
 | `PORT` | No | Server port (default `3000`, range 1–65535) |
 | `COOLDOWN_MS` | No | Cooldown per exhausted key (default `18000000` = 5h) |
+| `MAX_PARALLEL` | No | Max concurrent upstream requests (default `4`) |
 
 \* Required unless set via `coding-plan-pro-max auth login`.
 
@@ -86,6 +87,10 @@ When multiple API keys are configured, the proxy:
 2. **Auto-rotation on quota exhaustion** — HTTP 429 or 403 with quota keywords → key goes on cooldown, next key is tried.
 3. **Cooldown recovery** — after `COOLDOWN_MS`, the key becomes available again.
 4. **503 when all exhausted** — every key on cooldown → `503` + `proxy_error`.
+
+## Concurrency
+
+Requests are processed through a bounded pool. `MAX_PARALLEL` (default `4`) controls how many upstream calls run simultaneously. Excess requests queue and are dispatched as slots free up.
 
 ## API Endpoints
 
