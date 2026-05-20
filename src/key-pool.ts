@@ -8,7 +8,22 @@ interface KeyState {
   exhaustedUntil: number;
   /** Total number of requests routed through this key. */
   requestCount: number;
+  /** Total number of successful responses. */
+  successCount: number;
+  /** Total number of error responses (including quota errors). */
+  errorCount: number;
+  /** Number of consecutive errors (reset on success). */
+  consecutiveErrors: number;
+  /** Description of the last error. */
+  lastError: string | null;
+  /** Timestamp of the last error. */
+  lastErrorTime: number | null;
+  /** Timestamp of the last successful response. */
+  lastSuccessTime: number | null;
 }
+
+/** Health status of a single key. */
+export type KeyHealthStatus = "healthy" | "degraded" | "exhausted" | "failing";
 
 /** Pool of API keys with round-robin selection and cooldown tracking. */
 let pool: KeyState[] = [];
@@ -25,6 +40,12 @@ export function initPool(): void {
     key,
     exhaustedUntil: 0,
     requestCount: 0,
+    successCount: 0,
+    errorCount: 0,
+    consecutiveErrors: 0,
+    lastError: null,
+    lastErrorTime: null,
+    lastSuccessTime: null,
   }));
   currentIdx = 0;
 }
@@ -89,7 +110,100 @@ export function markExhausted(index: number): void {
 }
 
 /**
- * Get a snapshot of the current key pool status.
+ * Record a successful response for a key.
+ *
+ * @param index - Pool index returned by {@link pick}.
+ */
+export function recordSuccess(index: number): void {
+  const state = pool[index];
+  if (!state) return;
+
+  state.successCount++;
+  state.consecutiveErrors = 0;
+  state.lastSuccessTime = Date.now();
+}
+
+/**
+ * Record an error for a key.
+ *
+ * @param index - Pool index returned by {@link pick}.
+ * @param error - Description of the error.
+ */
+export function recordError(index: number, error: string): void {
+  const state = pool[index];
+  if (!state) return;
+
+  state.errorCount++;
+  state.consecutiveErrors++;
+  state.lastError = error;
+  state.lastErrorTime = Date.now();
+}
+
+/**
+ * Determine the health status of a key based on its state.
+ */
+function getKeyHealthStatus(state: KeyState): KeyHealthStatus {
+  const now = Date.now();
+
+  // Key is in cooldown — exhausted
+  if (now < state.exhaustedUntil) {
+    return "exhausted";
+  }
+
+  // High consecutive errors — failing
+  if (state.consecutiveErrors >= 5) {
+    return "failing";
+  }
+
+  // Some recent errors but still functional — degraded
+  if (state.consecutiveErrors > 0) {
+    return "degraded";
+  }
+
+  return "healthy";
+}
+
+/**
+ * Get health information for a single key.
+ *
+ * @returns Health details with key prefix only for safety.
+ */
+export function getKeyHealth(index: number): {
+  index: number;
+  key: string;
+  status: KeyHealthStatus;
+  available: boolean;
+  requests: number;
+  successes: number;
+  errors: number;
+  consecutiveErrors: number;
+  lastError: string | null;
+  lastErrorTime: number | null;
+  lastSuccessTime: number | null;
+} | null {
+  const state = pool[index];
+  if (!state) return null;
+
+  const now = Date.now();
+  const avail = now >= state.exhaustedUntil;
+
+  return {
+    index,
+    key: state.key.slice(0, 8) + "...",
+    status: getKeyHealthStatus(state),
+    available: avail,
+    requests: state.requestCount,
+    successes: state.successCount,
+    errors: state.errorCount,
+    consecutiveErrors: state.consecutiveErrors,
+    lastError: state.lastError,
+    lastErrorTime: state.lastErrorTime,
+    lastSuccessTime: state.lastSuccessTime,
+  };
+}
+
+/**
+ * Get a snapshot of the current key pool status with health info.
  *
  * @returns Object with total count, available count, and per-key details
  *          (key prefix only for safety).
@@ -100,8 +214,15 @@ export function getPoolStatus(): {
   keys: Array<{
     index: number;
     key: string;
+    status: KeyHealthStatus;
     available: boolean;
     requests: number;
+    successes: number;
+    errors: number;
+    consecutiveErrors: number;
+    lastError: string | null;
+    lastErrorTime: number | null;
+    lastSuccessTime: number | null;
   }>;
 } {
   const now = Date.now();
@@ -112,8 +233,15 @@ export function getPoolStatus(): {
     return {
       index,
       key: state.key.slice(0, 8) + "...",
+      status: getKeyHealthStatus(state),
       available: avail,
       requests: state.requestCount,
+      successes: state.successCount,
+      errors: state.errorCount,
+      consecutiveErrors: state.consecutiveErrors,
+      lastError: state.lastError,
+      lastErrorTime: state.lastErrorTime,
+      lastSuccessTime: state.lastSuccessTime,
     };
   });
   return { total: pool.length, available, keys };

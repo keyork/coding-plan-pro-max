@@ -1,12 +1,10 @@
 import type { Context } from "hono";
 import { loadConfig, normalizeModelName } from "./config.js";
-import { pick, markExhausted } from "./key-pool.js";
+import { pick, markExhausted, recordSuccess, recordError } from "./key-pool.js";
 import { semaphore } from "./semaphore.js";
 
-/** Maximum number of key-rotation retries per request. */
-const MAX_RETRIES = 5;
+const MAX_RETRIES = 3;
 
-/** Quota-related keywords found in upstream 403 error messages. */
 const QUOTA_KEYWORDS = [
   "quota",
   "limit",
@@ -15,12 +13,6 @@ const QUOTA_KEYWORDS = [
   "限制",
 ] as const;
 
-/**
- * Determine whether an upstream HTTP response indicates a quota exhaustion.
- *
- * Returns `true` for any 429, or for 403 responses whose error message
- * contains a quota-related keyword.
- */
 function isQuotaError(status: number, body: string): boolean {
   if (status === 429) return true;
   if (status === 403) {
@@ -35,9 +27,10 @@ function isQuotaError(status: number, body: string): boolean {
   return false;
 }
 
-/**
- * Build a standard OpenAI-style error response.
- */
+function isRetryableStatus(status: number): boolean {
+  return status >= 500 || status === 429 || status === 403 || status === 408;
+}
+
 function errorResponse(
   message: string,
   type: string,
@@ -49,12 +42,6 @@ function errorResponse(
   );
 }
 
-/**
- * Handle `GET /v1/models` — proxy the request to the upstream models endpoint.
- *
- * Uses a key from the pool for authentication. Returns 503 if all keys
- * are exhausted.
- */
 export async function handleModels(c: Context): Promise<Response> {
   const config = loadConfig();
   const entry = pick();
@@ -84,7 +71,6 @@ export async function handleModels(c: Context): Promise<Response> {
   }
 }
 
-/** Shape of a chat completion request body (loosely typed for pass-through). */
 interface ChatCompletionRequest {
   model?: string;
   messages?: unknown[];
@@ -92,15 +78,6 @@ interface ChatCompletionRequest {
   [key: string]: unknown;
 }
 
-/**
- * Handle `POST /v1/chat/completions`.
- *
- * Validates the request body, strips any provider prefix from the model name,
- * then forwards to the upstream API with key rotation and automatic retry
- * on quota exhaustion (429 / 403-with-quota-keyword).
- *
- * Supports both streaming (SSE) and non-streaming responses.
- */
 export async function handleChatCompletions(c: Context): Promise<Response> {
   const sem = semaphore();
   await sem.acquire();
@@ -159,7 +136,6 @@ function wrapBodyWithRelease(
 async function handleChatCompletionsInner(c: Context): Promise<Response> {
   const config = loadConfig();
 
-  // --- Parse request body ---
   let body: ChatCompletionRequest;
   try {
     body = await c.req.json();
@@ -171,7 +147,6 @@ async function handleChatCompletionsInner(c: Context): Promise<Response> {
     );
   }
 
-  // --- Validate required fields ---
   if (!body.model || typeof body.model !== "string") {
     return errorResponse(
       "Missing or invalid 'model' field",
@@ -188,12 +163,12 @@ async function handleChatCompletionsInner(c: Context): Promise<Response> {
     );
   }
 
-  // --- Prepare upstream request ---
   body.model = normalizeModelName(body.model);
   const upstreamURL = `${config.upstreamBaseURL}/chat/completions`;
   const abortSignal = c.req.raw.signal;
 
-  // --- Retry loop with key rotation ---
+  let lastError: string | null = null;
+
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     const entry = pick();
     if (!entry) {
@@ -209,56 +184,65 @@ async function handleChatCompletionsInner(c: Context): Promise<Response> {
       Authorization: `Bearer ${entry.key}`,
     };
 
+    let result: Response;
     try {
-      if (body.stream === true) {
-        const result = await forwardStreaming(
-          upstreamURL,
-          body,
-          headers,
-          abortSignal,
-        );
-
-        // If the upstream returned an error status, check for quota error
-        // and retry with the next key.
-        if (result.status === 429 || result.status === 403) {
-          const text = await result.clone().text();
-          if (isQuotaError(result.status, text)) {
-            markExhausted(entry.index);
-            continue;
-          }
-        }
-
-        return result;
-      }
-
-      // Non-streaming path
-      const result = await forwardNonStreaming(upstreamURL, body, headers, abortSignal);
-      if (isQuotaError(result.status, await result.clone().text())) {
-        markExhausted(entry.index);
-        continue;
-      }
-      return result;
+      result = body.stream === true
+        ? await forwardStreaming(upstreamURL, body, headers, abortSignal)
+        : await forwardNonStreaming(upstreamURL, body, headers, abortSignal);
     } catch (err) {
-      return errorResponse(
-        `Upstream request failed: ${String(err)}`,
-        "proxy_error",
-        502,
+      const errMsg = `Network error: ${String(err)}`;
+      recordError(entry.index, errMsg);
+      lastError = errMsg;
+      console.warn(
+        `[proxy] attempt ${attempt + 1}/${MAX_RETRIES} key ${entry.index} (${entry.key.slice(0, 8)}...) ${errMsg}`,
       );
+      continue;
     }
+
+    // Success — record and return
+    if (result.ok) {
+      recordSuccess(entry.index);
+      return result;
+    }
+
+    // Quota error — mark key exhausted, rotate to next key
+    const responseText = await result.clone().text();
+    if (isQuotaError(result.status, responseText)) {
+      const errMsg = `Quota exhausted (${result.status})`;
+      recordError(entry.index, errMsg);
+      markExhausted(entry.index);
+      lastError = errMsg;
+      console.warn(
+        `[proxy] attempt ${attempt + 1}/${MAX_RETRIES} key ${entry.index} (${entry.key.slice(0, 8)}...) ${errMsg}`,
+      );
+      continue;
+    }
+
+    // Other retryable errors (5xx, 408, etc.) — rotate key and retry
+    if (isRetryableStatus(result.status)) {
+      const errMsg = `Upstream error ${result.status}`;
+      recordError(entry.index, errMsg);
+      lastError = errMsg;
+      console.warn(
+        `[proxy] attempt ${attempt + 1}/${MAX_RETRIES} key ${entry.index} (${entry.key.slice(0, 8)}...) ${errMsg}`,
+      );
+      continue;
+    }
+
+    // Non-retryable client errors (400, 401, 404, etc.) — return directly
+    recordError(entry.index, `Client error ${result.status}`);
+    return result;
   }
 
   return errorResponse(
-    "All API keys exhausted after retries",
+    lastError
+      ? `All retries exhausted: ${lastError}`
+      : "All API keys exhausted after retries",
     "proxy_error",
     503,
   );
 }
 
-/**
- * Forward a non-streaming chat completion request to the upstream API.
- *
- * Returns the upstream response body verbatim with the original status code.
- */
 async function forwardNonStreaming(
   upstreamURL: string,
   body: unknown,
@@ -279,16 +263,6 @@ async function forwardNonStreaming(
   });
 }
 
-/**
- * Forward a streaming (SSE) chat completion request to the upstream API.
- *
- * For successful responses (2xx), the upstream body is piped directly as
- * `text/event-stream`. For error responses, the body is read fully and
- * returned as JSON so the caller can inspect the status code and body.
- *
- * The client-side abort signal is forwarded so that disconnecting the client
- * also cancels the upstream request.
- */
 async function forwardStreaming(
   upstreamURL: string,
   body: unknown,
@@ -302,8 +276,6 @@ async function forwardStreaming(
     signal: abortSignal,
   });
 
-  // For error responses, fully read the body and return it so the caller
-  // can inspect status code + body for quota-error detection.
   if (!upstreamRes.ok) {
     const errorBody = await upstreamRes.text();
     return new Response(errorBody, {
@@ -312,7 +284,6 @@ async function forwardStreaming(
     });
   }
 
-  // Happy path: pipe the SSE stream through.
   if (!upstreamRes.body) {
     return errorResponse(
       "Upstream returned empty body",
