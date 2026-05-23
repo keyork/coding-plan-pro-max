@@ -1,4 +1,5 @@
 import { loadConfig } from "./config.js";
+import { log, fmtKey, fmtMs } from "./log.js";
 
 /** Internal state tracked per API key. */
 interface KeyState {
@@ -104,9 +105,7 @@ export function markExhausted(index: number): void {
   if (!state) return;
 
   state.exhaustedUntil = Date.now() + config.cooldownMs;
-  console.log(
-    `[pool] key ${index} (${state.key.slice(0, 8)}...) exhausted, cooldown ${config.cooldownMs / 1000}s`,
-  );
+  log.warn("pool", `${fmtKey(state.key, index)} quota exhausted, cooldown ${fmtMs(config.cooldownMs)}`);
 }
 
 /**

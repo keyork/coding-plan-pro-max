@@ -2,6 +2,7 @@ import type { Context } from "hono";
 import { loadConfig, normalizeModelName } from "./config.js";
 import { pick, markExhausted, recordSuccess, recordError } from "./key-pool.js";
 import { semaphore } from "./semaphore.js";
+import { log, fmtKey, fmtStatus, fmtModel, fmtMs } from "./log.js";
 
 const MAX_RETRIES = 3;
 
@@ -78,7 +79,8 @@ interface ChatCompletionRequest {
 export async function handleChatCompletions(c: Context): Promise<Response> {
   const sem = semaphore();
   await sem.acquire();
-  const response = await handleChatCompletionsInner(c);
+  const t0 = Date.now();
+  const response = await handleChatCompletionsInner(c, t0);
 
   if (response.body) {
     return new Response(
@@ -130,7 +132,7 @@ function wrapBodyWithRelease(
   });
 }
 
-async function handleChatCompletionsInner(c: Context): Promise<Response> {
+async function handleChatCompletionsInner(c: Context, t0: number): Promise<Response> {
   const config = loadConfig();
 
   let body: ChatCompletionRequest;
@@ -163,6 +165,9 @@ async function handleChatCompletionsInner(c: Context): Promise<Response> {
   body.model = normalizeModelName(body.model);
   const upstreamURL = `${config.upstreamBaseURL}/chat/completions`;
   const abortSignal = c.req.raw.signal;
+  const stream = body.stream === true;
+
+  log.info("proxy", `→ ${fmtModel(body.model)} stream=${stream}`);
 
   let lastError: string | null = null;
   let lastResult: Response | null = null;
@@ -170,6 +175,7 @@ async function handleChatCompletionsInner(c: Context): Promise<Response> {
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     const entry = pick();
     if (!entry) {
+      log.error("proxy", `✗ All keys exhausted after ${attempt} attempts ${fmtMs(Date.now() - t0)}`);
       return errorResponse(
         "All API keys exhausted",
         "proxy_error",
@@ -182,50 +188,63 @@ async function handleChatCompletionsInner(c: Context): Promise<Response> {
       Authorization: `Bearer ${entry.key}`,
     };
 
+    const attemptT0 = Date.now();
     let result: Response;
     try {
-      result = body.stream === true
+      result = stream
         ? await forwardStreaming(upstreamURL, body, headers, abortSignal)
         : await forwardNonStreaming(upstreamURL, body, headers, abortSignal);
     } catch (err) {
       const errMsg = `Network error: ${String(err)}`;
       recordError(entry.index, errMsg);
       lastError = errMsg;
-      console.warn(
-        `[proxy] attempt ${attempt + 1}/${MAX_RETRIES} key ${entry.index} (${entry.key.slice(0, 8)}...) ${errMsg}`,
+      log.warn(
+        "proxy",
+        `✗ attempt ${attempt + 1}/${MAX_RETRIES} ${fmtKey(entry.key, entry.index)} ${errMsg} ${fmtMs(Date.now() - attemptT0)}`,
       );
       continue;
     }
 
-    // Success — record and return
+    // Success
     if (result.ok) {
       recordSuccess(entry.index);
+      log.success(
+        "proxy",
+        `✓ ${fmtKey(entry.key, entry.index)} ${fmtModel(body.model)} ${fmtStatus(result.status)} ${fmtMs(Date.now() - t0)}`,
+      );
       return result;
     }
 
-    // Quota error — mark key exhausted, rotate to next key
+    // Quota error
     const responseText = await result.clone().text();
     if (isQuotaError(result.status, responseText)) {
       const errMsg = `Quota exhausted (${result.status})`;
       recordError(entry.index, errMsg);
       markExhausted(entry.index);
       lastError = errMsg;
-      console.warn(
-        `[proxy] attempt ${attempt + 1}/${MAX_RETRIES} key ${entry.index} (${entry.key.slice(0, 8)}...) ${errMsg}`,
+      log.warn(
+        "proxy",
+        `✗ attempt ${attempt + 1}/${MAX_RETRIES} ${fmtKey(entry.key, entry.index)} ${errMsg} ${fmtMs(Date.now() - attemptT0)}`,
       );
       continue;
     }
 
-    // All other upstream errors — record, rotate key, retry
+    // All other upstream errors
     const errMsg = `Upstream error ${result.status}`;
     recordError(entry.index, errMsg);
     lastError = errMsg;
     lastResult = result;
-    console.warn(
-      `[proxy] attempt ${attempt + 1}/${MAX_RETRIES} key ${entry.index} (${entry.key.slice(0, 8)}...) ${errMsg}`,
+    log.warn(
+      "proxy",
+      `✗ attempt ${attempt + 1}/${MAX_RETRIES} ${fmtKey(entry.key, entry.index)} ${errMsg} ${fmtMs(Date.now() - attemptT0)}`,
     );
     continue;
   }
+
+  log.error(
+    "proxy",
+    `✗ ${fmtModel(body.model)} all ${MAX_RETRIES} retries exhausted: ${lastError} ${fmtMs(Date.now() - t0)}`,
+  );
 
   if (lastResult) {
     return lastResult;
