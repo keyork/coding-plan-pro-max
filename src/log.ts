@@ -1,7 +1,25 @@
 import pc from "picocolors";
 
 function timestamp(): string {
-  return pc.dim(new Date().toLocaleTimeString("en-US", { hour12: false }));
+  const d = new Date();
+  const date = d.toISOString().slice(0, 10);
+  const time = d.toTimeString().slice(0, 8);
+  return pc.dim(`${date} ${time}`);
+}
+
+function caller(): string {
+  const stack = new Error().stack?.split("\n") ?? [];
+  for (let i = 3; i < stack.length; i++) {
+    const line = stack[i].trim();
+    if (!line.includes("/log.ts")) {
+      const match = line.match(/(?:at\s+)?(?:.*\s+\()?(.+):(\d+):(\d+)\)?/);
+      if (match) {
+        const file = match[1].split("/").pop() ?? match[1];
+        return pc.dim(`<${file}:${match[2]}>`);
+      }
+    }
+  }
+  return "";
 }
 
 function tag(scope: string, color: (s: string) => string): string {
@@ -10,23 +28,23 @@ function tag(scope: string, color: (s: string) => string): string {
 
 export const log = {
   info(scope: string, msg: string, ...args: unknown[]): void {
-    console.log(`${timestamp()} ${tag(scope, pc.blue)} ${msg}`, ...args);
+    console.log(`${timestamp()} ${tag(scope, pc.blue)} ${caller()} ${msg}`, ...args);
   },
 
   success(scope: string, msg: string, ...args: unknown[]): void {
-    console.log(`${timestamp()} ${tag(scope, pc.green)} ${msg}`, ...args);
+    console.log(`${timestamp()} ${tag(scope, pc.green)} ${caller()} ${msg}`, ...args);
   },
 
   warn(scope: string, msg: string, ...args: unknown[]): void {
-    console.warn(`${timestamp()} ${tag(scope, pc.yellow)} ${pc.yellow(msg)}`, ...args);
+    console.warn(`${timestamp()} ${tag(scope, pc.yellow)} ${caller()} ${pc.yellow(msg)}`, ...args);
   },
 
   error(scope: string, msg: string, ...args: unknown[]): void {
-    console.error(`${timestamp()} ${tag(scope, pc.red)} ${pc.red(msg)}`, ...args);
+    console.error(`${timestamp()} ${tag(scope, pc.red)} ${caller()} ${pc.red(msg)}`, ...args);
   },
 
   debug(scope: string, msg: string, ...args: unknown[]): void {
-    console.log(`${timestamp()} ${tag(scope, pc.dim)} ${pc.dim(msg)}`, ...args);
+    console.log(`${timestamp()} ${tag(scope, pc.dim)} ${caller()} ${pc.dim(msg)}`, ...args);
   },
 };
 
