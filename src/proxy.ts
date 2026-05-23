@@ -27,9 +27,6 @@ function isQuotaError(status: number, body: string): boolean {
   return false;
 }
 
-function isRetryableStatus(status: number): boolean {
-  return status >= 500 || status === 429 || status === 403 || status === 408;
-}
 
 function errorResponse(
   message: string,
@@ -168,6 +165,7 @@ async function handleChatCompletionsInner(c: Context): Promise<Response> {
   const abortSignal = c.req.raw.signal;
 
   let lastError: string | null = null;
+  let lastResult: Response | null = null;
 
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     const entry = pick();
@@ -218,20 +216,19 @@ async function handleChatCompletionsInner(c: Context): Promise<Response> {
       continue;
     }
 
-    // Other retryable errors (5xx, 408, etc.) — rotate key and retry
-    if (isRetryableStatus(result.status)) {
-      const errMsg = `Upstream error ${result.status}`;
-      recordError(entry.index, errMsg);
-      lastError = errMsg;
-      console.warn(
-        `[proxy] attempt ${attempt + 1}/${MAX_RETRIES} key ${entry.index} (${entry.key.slice(0, 8)}...) ${errMsg}`,
-      );
-      continue;
-    }
+    // All other upstream errors — record, rotate key, retry
+    const errMsg = `Upstream error ${result.status}`;
+    recordError(entry.index, errMsg);
+    lastError = errMsg;
+    lastResult = result;
+    console.warn(
+      `[proxy] attempt ${attempt + 1}/${MAX_RETRIES} key ${entry.index} (${entry.key.slice(0, 8)}...) ${errMsg}`,
+    );
+    continue;
+  }
 
-    // Non-retryable client errors (400, 401, 404, etc.) — return directly
-    recordError(entry.index, `Client error ${result.status}`);
-    return result;
+  if (lastResult) {
+    return lastResult;
   }
 
   return errorResponse(
