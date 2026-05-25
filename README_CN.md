@@ -77,7 +77,7 @@ coding-plan-pro-max auth login
 
 ### 支持的提供商
 
-查看 **[PROVIDERS.md](PROVIDERS.md)** 获取各主流 Coding Plan 提供商的 API Base URL 列表（智谱、豆包、DeepSeek、Kimi、硅基流动、OpenRouter、OpenAI、Anthropic、Google、通义千问、MiniMax）。
+任何 OpenAI 兼容的 API 端点。在 `auth login` 时设置上游 Base URL，或通过 `UPSTREAM_BASE_URL` 环境变量指定。
 
 ## 多 Key 轮换
 

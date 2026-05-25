@@ -77,7 +77,7 @@ Credentials are stored at `~/.config/coding-plan-pro-max/credentials` (JSON, fil
 
 ### Supported Providers
 
-See **[PROVIDERS.md](PROVIDERS.md)** for a full list of Coding Plan API base URLs from major providers (Zhipu, Doubao, DeepSeek, Kimi, SiliconFlow, OpenRouter, OpenAI, Anthropic, Google, Qwen, MiniMax).
+Any OpenAI-compatible API endpoint. Set your upstream base URL during `auth login` or via `UPSTREAM_BASE_URL`.
 
 ## Multi-Key Rotation
 
