@@ -2,12 +2,15 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { loadCredentials } from "./credentials.js";
 
+export type KeyMode = "round-robin" | "squeeze";
+
 export interface Config {
   apiKeys: string[];
   upstreamBaseURL: string;
   port: number;
   cooldownMs: number;
   maxParallel: number;
+  keyMode: KeyMode;
 }
 
 let cached: Config | undefined;
@@ -134,12 +137,21 @@ export function loadConfig(): Config {
     process.exit(1);
   }
 
+  // --- Key mode ---
+  const rawMode = (process.env.KEY_MODE ?? "round-robin").toLowerCase();
+  if (rawMode !== "round-robin" && rawMode !== "squeeze") {
+    console.error(`Invalid KEY_MODE: "${process.env.KEY_MODE}". Must be "round-robin" or "squeeze".`);
+    process.exit(1);
+  }
+  const keyMode: KeyMode = rawMode as KeyMode;
+
   cached = {
     apiKeys,
     upstreamBaseURL: upstreamBaseURL.replace(/\/+$/, ""),
     port,
     cooldownMs,
     maxParallel,
+    keyMode,
   };
 
   return cached;

@@ -1,4 +1,4 @@
-import { loadConfig } from "./config.js";
+import { loadConfig, type KeyMode } from "./config.js";
 import { log, fmtKey, fmtMs } from "./log.js";
 
 /** Internal state tracked per API key. */
@@ -28,15 +28,12 @@ export type KeyHealthStatus = "healthy" | "degraded" | "exhausted" | "failing";
 
 /** Pool of API keys with round-robin selection and cooldown tracking. */
 let pool: KeyState[] = [];
-/** Index of the last key returned by {@link pick}. */
 let currentIdx = 0;
+let activeKeyMode: KeyMode = "round-robin";
 
-/**
- * Initialize the key pool from the current configuration.
- * Must be called once at startup before any calls to {@link pick}.
- */
 export function initPool(): void {
   const config = loadConfig();
+  activeKeyMode = config.keyMode;
   pool = config.apiKeys.map((key) => ({
     key,
     exhaustedUntil: 0,
@@ -64,7 +61,17 @@ export function initPool(): void {
 export function pick(): { key: string; index: number } | null {
   const now = Date.now();
 
-  // Try each key starting from currentIdx, looking for an available one.
+  // Squeeze mode: prefer the last used key if it's still available
+  if (activeKeyMode === "squeeze" && pool.length > 0) {
+    const lastIdx = (currentIdx - 1 + pool.length) % pool.length;
+    const lastState = pool[lastIdx];
+    if (lastState && now >= lastState.exhaustedUntil) {
+      lastState.requestCount++;
+      return { key: lastState.key, index: lastIdx };
+    }
+  }
+
+  // Round-robin fallback (also used when squeeze key is exhausted)
   for (let i = 0; i < pool.length; i++) {
     const idx = (currentIdx + i) % pool.length;
     const state = pool[idx];
@@ -75,8 +82,7 @@ export function pick(): { key: string; index: number } | null {
     }
   }
 
-  // All keys exhausted. If the earliest cooldown is suspiciously old
-  // (somehow beyond cooldownMs), force-release it as a safety valve.
+  // All keys exhausted — force-release earliest if stale
   const config = loadConfig();
   const earliest = pool.reduce((min, s) =>
     s.exhaustedUntil < min.exhaustedUntil ? s : min,

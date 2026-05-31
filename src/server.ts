@@ -39,6 +39,7 @@ export function startServer(): void {
     `  ${pc.green("➜")}  ${pc.bold("Local:")}   http://localhost:${config.port}`,
     `  ${pc.green("➜")}  ${pc.bold("Upstream:")} ${config.upstreamBaseURL}`,
     `  ${pc.green("➜")}  ${pc.bold("Keys:")}     ${pc.yellow(config.apiKeys.length)} key(s) loaded`,
+    `  ${pc.green("➜")}  ${pc.bold("Mode:")}     ${config.keyMode === "squeeze" ? pc.red("squeeze (drain one before next)") : pc.blue("round-robin")}`,
     `  ${pc.green("➜")}  ${pc.bold("Workers:")}  ${config.maxParallel} parallel max`,
     `  ${pc.green("➜")}  ${pc.bold("Cooldown:")} ${fmtMs(config.cooldownMs)}`,
   ]);
