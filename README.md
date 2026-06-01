@@ -36,7 +36,7 @@ npm start          # runs "node dist/index.js start"
 coding-plan-pro-max auth login    Configure upstream URL and API keys interactively
 coding-plan-pro-max auth logout   Remove saved credentials
 coding-plan-pro-max auth status   Show current auth state and test connection
-coding-plan-pro-max start         Start the proxy server
+coding-plan-pro-max start [-p PORT] [-m MODE]   Start the proxy server
 coding-plan-pro-max --help        Show help
 ```
 
@@ -61,6 +61,7 @@ coding-plan-pro-max auth login
 | `PORT` | No | Server port (default `3000`, range 1–65535) |
 | `COOLDOWN_MS` | No | Cooldown per exhausted key (default `18000000` = 5h) |
 | `MAX_PARALLEL` | No | Max concurrent upstream requests (default `4`) |
+| `KEY_MODE` | No | Key selection: `round-robin` (default) or `squeeze` |
 
 \* Required unless set via `coding-plan-pro-max auth login`.
 
@@ -87,6 +88,21 @@ When multiple API keys are configured, the proxy:
 2. **Auto-rotation on quota exhaustion** — HTTP 429 or 403 with quota keywords → key goes on cooldown, next key is tried.
 3. **Cooldown recovery** — after `COOLDOWN_MS`, the key becomes available again.
 4. **503 when all exhausted** — every key on cooldown → `503` + `proxy_error`.
+
+### Key Selection Modes
+
+| Mode | CLI Flag | Behavior |
+|------|----------|----------|
+| `round-robin` (default) | `--mode round-robin` | Distributes requests evenly across all keys |
+| `squeeze` | `--mode squeeze` | Sticks with one key until it hits quota, then switches to the next |
+
+```bash
+# Default: rotate evenly
+coding-plan-pro-max start
+
+# Squeeze: drain one key before moving to next
+coding-plan-pro-max start --mode squeeze
+```
 
 ## Concurrency
 

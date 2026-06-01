@@ -31,7 +31,7 @@ program
   .command("start")
   .description("Start the proxy server")
   .option("-p, --port <port>", "Override server port")
-  .option("-m, --mode <mode>", "Key selection mode: round-robin or squeeze", "round-robin")
+  .option("-m, --mode <mode>", "Key selection mode: round-robin or squeeze")
   .action(startAction);
 
 program.parse();

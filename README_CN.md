@@ -36,7 +36,7 @@ npm start          # 执行 "node dist/index.js start"
 coding-plan-pro-max auth login    交互式配置上游 URL 和 API Key
 coding-plan-pro-max auth logout   删除已保存的凭证
 coding-plan-pro-max auth status   查看当前认证状态并测试连接
-coding-plan-pro-max start         启动代理服务器
+coding-plan-pro-max start [-p PORT] [-m MODE]   启动代理服务器
 coding-plan-pro-max --help        显示帮助
 ```
 
@@ -61,6 +61,7 @@ coding-plan-pro-max auth login
 | `PORT` | 否 | 服务端口（默认 `3000`，范围 1–65535） |
 | `COOLDOWN_MS` | 否 | 耗尽 Key 的冷却时间（默认 `18000000` = 5 小时） |
 | `MAX_PARALLEL` | 否 | 最大并发上游请求数（默认 `4`） |
+| `KEY_MODE` | 否 | Key 选择模式：`round-robin`（默认）或 `squeeze` |
 
 \* 除非已通过 `coding-plan-pro-max auth login` 设置。
 
@@ -87,6 +88,21 @@ coding-plan-pro-max auth login
 2. **配额耗尽自动切换** — HTTP 429 或 403 含配额关键词 → Key 进入冷却，立即尝试下一个。
 3. **冷却恢复** — 经过 `COOLDOWN_MS` 后 Key 重新可用。
 4. **全部耗尽返回 503** — 所有 Key 在冷却期 → 返回 `503` + `proxy_error`。
+
+### Key 选择模式
+
+| 模式 | CLI 参数 | 行为 |
+|------|----------|------|
+| `round-robin`（默认） | `--mode round-robin` | 请求均匀分配到所有 Key |
+| `squeeze` | `--mode squeeze` | 一直使用同一个 Key 直到配额耗尽，再切换到下一个 |
+
+```bash
+# 默认：均匀轮替
+coding-plan-pro-max start
+
+# 薅羊毛模式：用干一个再换下一个
+coding-plan-pro-max start --mode squeeze
+```
 
 ## 并发控制
 
