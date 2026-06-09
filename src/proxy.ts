@@ -1,6 +1,6 @@
 import type { Context } from "hono";
 import { loadConfig, normalizeModelName } from "./config.js";
-import { pick, markExhausted, recordSuccess, recordError } from "./key-pool.js";
+import { pick, markExhausted, recordSuccess, recordError, poolSize } from "./key-pool.js";
 import { semaphore } from "./semaphore.js";
 import { log, fmtKey, fmtStatus, fmtModel, fmtMs } from "./log.js";
 
@@ -169,13 +169,15 @@ async function handleChatCompletionsInner(c: Context, t0: number): Promise<Respo
 
   log.info("proxy", `→ ${fmtModel(body.model)} stream=${stream}`);
 
+  const maxKeyAttempts = poolSize();
   let lastError: string | null = null;
   let lastResult: Response | null = null;
 
-  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+  // Outer loop: rotate to a new key (only on quota exhaustion)
+  for (let keyAttempt = 0; keyAttempt < maxKeyAttempts; keyAttempt++) {
     const entry = pick();
     if (!entry) {
-      log.error("proxy", `✗ All keys exhausted after ${attempt} attempts ${fmtMs(Date.now() - t0)}`);
+      log.error("proxy", `✗ All keys exhausted ${fmtMs(Date.now() - t0)}`);
       return errorResponse(
         "All API keys exhausted",
         "proxy_error",
@@ -183,67 +185,71 @@ async function handleChatCompletionsInner(c: Context, t0: number): Promise<Respo
       );
     }
 
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${entry.key}`,
-    };
+    // Inner loop: retry same key on transient errors
+    let switchedKey = false;
+    for (let retry = 0; retry < MAX_RETRIES && !switchedKey; retry++) {
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${entry.key}`,
+      };
 
-    const attemptT0 = Date.now();
-    let result: Response;
-    try {
-      result = stream
-        ? await forwardStreaming(upstreamURL, body, headers, abortSignal)
-        : await forwardNonStreaming(upstreamURL, body, headers, abortSignal);
-    } catch (err) {
-      const errMsg = `Network error: ${String(err)}`;
+      const attemptT0 = Date.now();
+      let result: Response;
+      try {
+        result = stream
+          ? await forwardStreaming(upstreamURL, body, headers, abortSignal)
+          : await forwardNonStreaming(upstreamURL, body, headers, abortSignal);
+      } catch (err) {
+        const errMsg = `Network error: ${String(err)}`;
+        recordError(entry.index, errMsg);
+        lastError = errMsg;
+        log.warn(
+          "proxy",
+          `✗ retry ${retry + 1}/${MAX_RETRIES} ${fmtKey(entry.key, entry.index)} ${errMsg} ${fmtMs(Date.now() - attemptT0)}`,
+        );
+        continue;
+      }
+
+      // Success
+      if (result.ok) {
+        recordSuccess(entry.index);
+        log.success(
+          "proxy",
+          `✓ ${fmtKey(entry.key, entry.index)} ${fmtModel(body.model)} ${fmtStatus(result.status)} ${fmtMs(Date.now() - t0)}`,
+        );
+        return result;
+      }
+
+      // Quota error → switch key
+      const responseText = await result.clone().text();
+      if (isQuotaError(result.status, responseText)) {
+        const errMsg = `Quota exhausted (${result.status})`;
+        recordError(entry.index, errMsg);
+        markExhausted(entry.index);
+        lastError = errMsg;
+        log.warn(
+          "proxy",
+          `✗ ${fmtKey(entry.key, entry.index)} ${errMsg} → rotating key ${fmtMs(Date.now() - attemptT0)}`,
+        );
+        switchedKey = true;
+        break;
+      }
+
+      // All other upstream errors → retry same key
+      const errMsg = `Upstream error ${result.status}`;
       recordError(entry.index, errMsg);
       lastError = errMsg;
+      lastResult = result;
       log.warn(
         "proxy",
-        `✗ attempt ${attempt + 1}/${MAX_RETRIES} ${fmtKey(entry.key, entry.index)} ${errMsg} ${fmtMs(Date.now() - attemptT0)}`,
+        `✗ retry ${retry + 1}/${MAX_RETRIES} ${fmtKey(entry.key, entry.index)} ${errMsg} ${fmtMs(Date.now() - attemptT0)}`,
       );
-      continue;
     }
-
-    // Success
-    if (result.ok) {
-      recordSuccess(entry.index);
-      log.success(
-        "proxy",
-        `✓ ${fmtKey(entry.key, entry.index)} ${fmtModel(body.model)} ${fmtStatus(result.status)} ${fmtMs(Date.now() - t0)}`,
-      );
-      return result;
-    }
-
-    // Quota error
-    const responseText = await result.clone().text();
-    if (isQuotaError(result.status, responseText)) {
-      const errMsg = `Quota exhausted (${result.status})`;
-      recordError(entry.index, errMsg);
-      markExhausted(entry.index);
-      lastError = errMsg;
-      log.warn(
-        "proxy",
-        `✗ attempt ${attempt + 1}/${MAX_RETRIES} ${fmtKey(entry.key, entry.index)} ${errMsg} ${fmtMs(Date.now() - attemptT0)}`,
-      );
-      continue;
-    }
-
-    // All other upstream errors
-    const errMsg = `Upstream error ${result.status}`;
-    recordError(entry.index, errMsg);
-    lastError = errMsg;
-    lastResult = result;
-    log.warn(
-      "proxy",
-      `✗ attempt ${attempt + 1}/${MAX_RETRIES} ${fmtKey(entry.key, entry.index)} ${errMsg} ${fmtMs(Date.now() - attemptT0)}`,
-    );
-    continue;
   }
 
   log.error(
     "proxy",
-    `✗ ${fmtModel(body.model)} all ${MAX_RETRIES} retries exhausted: ${lastError} ${fmtMs(Date.now() - t0)}`,
+    `✗ ${fmtModel(body.model)} all retries exhausted: ${lastError} ${fmtMs(Date.now() - t0)}`,
   );
 
   if (lastResult) {

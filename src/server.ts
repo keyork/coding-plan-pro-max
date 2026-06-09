@@ -3,7 +3,7 @@ import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import { serve } from "@hono/node-server";
 import { loadConfig } from "./config.js";
-import { initPool, getPoolStatus } from "./key-pool.js";
+import { initPool, getPoolStatus, healthCheck } from "./key-pool.js";
 import { initSemaphore, semaphore } from "./semaphore.js";
 import { handleChatCompletions, handleModels } from "./proxy.js";
 import { log, banner, fmtMs } from "./log.js";
@@ -13,6 +13,11 @@ export function startServer(): void {
   const config = loadConfig();
   initPool();
   initSemaphore(config.maxParallel);
+
+  log.info("proxy", `Running health check against ${config.upstreamBaseURL}...`);
+  healthCheck(config.upstreamBaseURL).then(() => {
+    log.info("proxy", "Health check complete");
+  });
 
   const app = new Hono();
 

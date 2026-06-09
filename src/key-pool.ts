@@ -1,6 +1,8 @@
 import { loadConfig, type KeyMode } from "./config.js";
 import { log, fmtKey, fmtMs } from "./log.js";
 
+const RETRIES_PER_KEY = 3;
+
 /** Internal state tracked per API key. */
 interface KeyState {
   /** The API key string. */
@@ -97,6 +99,43 @@ export function pick(): { key: string; index: number } | null {
   }
 
   return null;
+}
+
+export function poolSize(): number {
+  return pool.length;
+}
+
+export async function healthCheck(baseURL: string): Promise<void> {
+  const modelsURL = `${baseURL}/models`;
+  const results = await Promise.all(
+    pool.map(async (state, index) => {
+      try {
+        const res = await fetch(modelsURL, {
+          headers: { Authorization: `Bearer ${state.key}` },
+          signal: AbortSignal.timeout(10000),
+        });
+        if (res.ok) {
+          log.success("pool", `${fmtKey(state.key, index)} alive (${res.status})`);
+          return true;
+        }
+        const isQuota = res.status === 429 || res.status === 403;
+        if (isQuota) {
+          const config = loadConfig();
+          state.exhaustedUntil = Date.now() + config.cooldownMs;
+          log.warn("pool", `${fmtKey(state.key, index)} quota exhausted at startup, cooldown ${fmtMs(config.cooldownMs)}`);
+        } else {
+          log.warn("pool", `${fmtKey(state.key, index)} unhealthy (${res.status})`);
+        }
+        return false;
+      } catch (err) {
+        log.error("pool", `${fmtKey(state.key, index)} unreachable: ${String(err)}`);
+        return false;
+      }
+    }),
+  );
+
+  const alive = results.filter(Boolean).length;
+  log.info("pool", `Health check: ${alive}/${pool.length} keys alive`);
 }
 
 /**
