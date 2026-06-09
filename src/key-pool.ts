@@ -105,32 +105,40 @@ export function poolSize(): number {
   return pool.length;
 }
 
+const HEALTH_CHECK_RETRIES = 3;
+const HEALTH_CHECK_DELAY_MS = 2000;
+
 export async function healthCheck(baseURL: string): Promise<void> {
   const modelsURL = `${baseURL}/models`;
   const results = await Promise.all(
     pool.map(async (state, index) => {
-      try {
-        const res = await fetch(modelsURL, {
-          headers: { Authorization: `Bearer ${state.key}` },
-          signal: AbortSignal.timeout(10000),
-        });
-        if (res.ok) {
-          log.success("pool", `${fmtKey(state.key, index)} alive (${res.status})`);
-          return true;
+      for (let attempt = 1; attempt <= HEALTH_CHECK_RETRIES; attempt++) {
+        try {
+          const res = await fetch(modelsURL, {
+            headers: { Authorization: `Bearer ${state.key}` },
+            signal: AbortSignal.timeout(10000),
+          });
+          if (res.ok) {
+            log.success("pool", `${fmtKey(state.key, index)} alive (${res.status})`);
+            return true;
+          }
+          const isQuota = res.status === 429 || res.status === 403;
+          if (isQuota) {
+            const config = loadConfig();
+            state.exhaustedUntil = Date.now() + config.cooldownMs;
+            log.warn("pool", `${fmtKey(state.key, index)} quota exhausted at startup, cooldown ${fmtMs(config.cooldownMs)}`);
+            return false;
+          }
+          log.warn("pool", `${fmtKey(state.key, index)} check ${attempt}/${HEALTH_CHECK_RETRIES} failed (${res.status})`);
+        } catch (err) {
+          log.warn("pool", `${fmtKey(state.key, index)} check ${attempt}/${HEALTH_CHECK_RETRIES} unreachable: ${String(err)}`);
         }
-        const isQuota = res.status === 429 || res.status === 403;
-        if (isQuota) {
-          const config = loadConfig();
-          state.exhaustedUntil = Date.now() + config.cooldownMs;
-          log.warn("pool", `${fmtKey(state.key, index)} quota exhausted at startup, cooldown ${fmtMs(config.cooldownMs)}`);
-        } else {
-          log.warn("pool", `${fmtKey(state.key, index)} unhealthy (${res.status})`);
+        if (attempt < HEALTH_CHECK_RETRIES) {
+          await new Promise((r) => setTimeout(r, HEALTH_CHECK_DELAY_MS));
         }
-        return false;
-      } catch (err) {
-        log.error("pool", `${fmtKey(state.key, index)} unreachable: ${String(err)}`);
-        return false;
       }
+      log.error("pool", `${fmtKey(state.key, index)} dead after ${HEALTH_CHECK_RETRIES} checks`);
+      return false;
     }),
   );
 
