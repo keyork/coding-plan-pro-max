@@ -1,6 +1,6 @@
 import type { Context } from "hono";
 import { loadConfig, normalizeModelName } from "./config.js";
-import { pick, markExhausted, recordSuccess, recordError, poolSize } from "./key-pool.js";
+import { pick, markExhausted, recordSuccess, recordError, poolSize, earliestRecoveryMs } from "./key-pool.js";
 import { semaphore } from "./semaphore.js";
 import { log, fmtKey, fmtStatus, fmtModel, fmtMs } from "./log.js";
 
@@ -175,7 +175,15 @@ async function handleChatCompletionsInner(c: Context, t0: number): Promise<Respo
 
   // Outer loop: rotate to a new key (only on quota exhaustion)
   for (let keyAttempt = 0; keyAttempt < maxKeyAttempts; keyAttempt++) {
-    const entry = pick();
+    let entry = pick();
+    if (!entry) {
+      const waitMs = earliestRecoveryMs();
+      if (Number.isFinite(waitMs) && waitMs <= 15000) {
+        log.warn("proxy", `⏳ All keys in cooldown, waiting ${fmtMs(waitMs)} for recovery...`);
+        await new Promise((r) => setTimeout(r, waitMs + 500));
+        entry = pick();
+      }
+    }
     if (!entry) {
       log.error("proxy", `✗ All keys exhausted ${fmtMs(Date.now() - t0)}`);
       return errorResponse(

@@ -3,6 +3,14 @@ import { log, fmtKey, fmtMs } from "./log.js";
 
 const RETRIES_PER_KEY = 3;
 
+/** Random cooldown between 5s and 10s (5000–10000 ms). */
+const COOLDOWN_MIN_MS = 5000;
+const COOLDOWN_MAX_MS = 10000;
+
+function randomCooldownMs(): number {
+  return COOLDOWN_MIN_MS + Math.floor(Math.random() * (COOLDOWN_MAX_MS - COOLDOWN_MIN_MS + 1));
+}
+
 /** Internal state tracked per API key. */
 interface KeyState {
   /** The API key string. */
@@ -85,12 +93,11 @@ export function pick(): { key: string; index: number } | null {
   }
 
   // All keys exhausted — force-release earliest if stale
-  const config = loadConfig();
   const earliest = pool.reduce((min, s) =>
     s.exhaustedUntil < min.exhaustedUntil ? s : min,
   );
   const waitMs = Math.max(0, earliest.exhaustedUntil - now);
-  if (waitMs > config.cooldownMs) {
+  if (waitMs > COOLDOWN_MAX_MS * 2) {
     const earliestIdx = pool.indexOf(earliest);
     earliest.exhaustedUntil = 0;
     earliest.requestCount++;
@@ -124,9 +131,9 @@ export async function healthCheck(baseURL: string): Promise<void> {
           }
           const isQuota = res.status === 429 || res.status === 403;
           if (isQuota) {
-            const config = loadConfig();
-            state.exhaustedUntil = Date.now() + config.cooldownMs;
-            log.warn("pool", `${fmtKey(state.key, index)} quota exhausted at startup, cooldown ${fmtMs(config.cooldownMs)}`);
+            const cooldownMs = randomCooldownMs();
+            state.exhaustedUntil = Date.now() + cooldownMs;
+            log.warn("pool", `${fmtKey(state.key, index)} quota exhausted at startup, cooldown ${fmtMs(cooldownMs)}`);
             return false;
           }
           log.warn("pool", `${fmtKey(state.key, index)} check ${attempt}/${HEALTH_CHECK_RETRIES} failed (${res.status})`);
@@ -153,12 +160,19 @@ export async function healthCheck(baseURL: string): Promise<void> {
  * @param index - Pool index returned by {@link pick}.
  */
 export function markExhausted(index: number): void {
-  const config = loadConfig();
   const state = pool[index];
   if (!state) return;
 
-  state.exhaustedUntil = Date.now() + config.cooldownMs;
-  log.warn("pool", `${fmtKey(state.key, index)} quota exhausted, cooldown ${fmtMs(config.cooldownMs)}`);
+  const cooldownMs = randomCooldownMs();
+  state.exhaustedUntil = Date.now() + cooldownMs;
+  log.warn("pool", `${fmtKey(state.key, index)} quota exhausted, cooldown ${fmtMs(cooldownMs)}`);
+}
+
+export function earliestRecoveryMs(): number {
+  const now = Date.now();
+  if (pool.length === 0) return Infinity;
+  const earliest = Math.min(...pool.map((s) => s.exhaustedUntil));
+  return Math.max(0, earliest - now);
 }
 
 /**
