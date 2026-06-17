@@ -17,6 +17,8 @@ interface KeyState {
   key: string;
   /** Timestamp (ms) until which this key is considered exhausted. 0 = available. */
   exhaustedUntil: number;
+  /** Permanently removed from rotation (failed health check). */
+  disabled: boolean;
   /** Total number of requests routed through this key. */
   requestCount: number;
   /** Total number of successful responses. */
@@ -34,7 +36,7 @@ interface KeyState {
 }
 
 /** Health status of a single key. */
-export type KeyHealthStatus = "healthy" | "degraded" | "exhausted" | "failing";
+export type KeyHealthStatus = "healthy" | "degraded" | "exhausted" | "failing" | "disabled";
 
 /** Pool of API keys with round-robin selection and cooldown tracking. */
 let pool: KeyState[] = [];
@@ -47,6 +49,7 @@ export function initPool(): void {
   pool = config.apiKeys.map((key) => ({
     key,
     exhaustedUntil: 0,
+    disabled: false,
     requestCount: 0,
     successCount: 0,
     errorCount: 0,
@@ -75,7 +78,7 @@ export function pick(): { key: string; index: number } | null {
   if (activeKeyMode === "squeeze" && pool.length > 0) {
     const lastIdx = (currentIdx - 1 + pool.length) % pool.length;
     const lastState = pool[lastIdx];
-    if (lastState && now >= lastState.exhaustedUntil) {
+    if (lastState && !lastState.disabled && now >= lastState.exhaustedUntil) {
       lastState.requestCount++;
       return { key: lastState.key, index: lastIdx };
     }
@@ -85,15 +88,19 @@ export function pick(): { key: string; index: number } | null {
   for (let i = 0; i < pool.length; i++) {
     const idx = (currentIdx + i) % pool.length;
     const state = pool[idx];
-    if (now >= state.exhaustedUntil) {
+    if (!state.disabled && now >= state.exhaustedUntil) {
       currentIdx = (idx + 1) % pool.length;
       state.requestCount++;
       return { key: state.key, index: idx };
     }
   }
 
-  // All keys exhausted — force-release earliest if stale
-  const earliest = pool.reduce((min, s) =>
+  // All non-disabled keys exhausted — force-release earliest if stale
+  const candidates = pool.filter((s) => !s.disabled);
+  if (candidates.length === 0) {
+    return null;
+  }
+  const earliest = candidates.reduce((min, s) =>
     s.exhaustedUntil < min.exhaustedUntil ? s : min,
   );
   const waitMs = Math.max(0, earliest.exhaustedUntil - now);
@@ -131,9 +138,8 @@ export async function healthCheck(baseURL: string): Promise<void> {
           }
           const isQuota = res.status === 429 || res.status === 403;
           if (isQuota) {
-            const cooldownMs = randomCooldownMs();
-            state.exhaustedUntil = Date.now() + cooldownMs;
-            log.warn("pool", `${fmtKey(state.key, index)} quota exhausted at startup, cooldown ${fmtMs(cooldownMs)}`);
+            state.disabled = true;
+            log.warn("pool", `${fmtKey(state.key, index)} quota exhausted at startup, disabled`);
             return false;
           }
           log.warn("pool", `${fmtKey(state.key, index)} check ${attempt}/${HEALTH_CHECK_RETRIES} failed (${res.status})`);
@@ -144,7 +150,8 @@ export async function healthCheck(baseURL: string): Promise<void> {
           await new Promise((r) => setTimeout(r, HEALTH_CHECK_DELAY_MS));
         }
       }
-      log.error("pool", `${fmtKey(state.key, index)} dead after ${HEALTH_CHECK_RETRIES} checks`);
+      state.disabled = true;
+      log.error("pool", `${fmtKey(state.key, index)} dead after ${HEALTH_CHECK_RETRIES} checks, disabled`);
       return false;
     }),
   );
@@ -170,8 +177,9 @@ export function markExhausted(index: number): void {
 
 export function earliestRecoveryMs(): number {
   const now = Date.now();
-  if (pool.length === 0) return Infinity;
-  const earliest = Math.min(...pool.map((s) => s.exhaustedUntil));
+  const candidates = pool.filter((s) => !s.disabled);
+  if (candidates.length === 0) return Infinity;
+  const earliest = Math.min(...candidates.map((s) => s.exhaustedUntil));
   return Math.max(0, earliest - now);
 }
 
@@ -209,6 +217,10 @@ export function recordError(index: number, error: string): void {
  * Determine the health status of a key based on its state.
  */
 function getKeyHealthStatus(state: KeyState): KeyHealthStatus {
+  if (state.disabled) {
+    return "disabled";
+  }
+
   const now = Date.now();
 
   // Key is in cooldown — exhausted
@@ -251,7 +263,7 @@ export function getKeyHealth(index: number): {
   if (!state) return null;
 
   const now = Date.now();
-  const avail = now >= state.exhaustedUntil;
+  const avail = !state.disabled && now >= state.exhaustedUntil;
 
   return {
     index,
@@ -294,7 +306,7 @@ export function getPoolStatus(): {
   const now = Date.now();
   let available = 0;
   const keys = pool.map((state, index) => {
-    const avail = now >= state.exhaustedUntil;
+    const avail = !state.disabled && now >= state.exhaustedUntil;
     if (avail) available++;
     return {
       index,
